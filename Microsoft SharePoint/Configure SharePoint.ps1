@@ -1,42 +1,102 @@
 # Install: https://pnp.github.io/powershell/articles/installation.html
 # Register: https://pnp.github.io/powershell/articles/registerapplication.html
+# Uninstall-Module PnP.PowerShell -AllVersions
+# Install-Module PnP.PowerShell -Scope AllUsers -AllowPrerelease -SkipPublisherCheck
+# Update-Module PnP.PowerShell -Scope AllUsers -AllowPrerelease -Force
 
-# Tenants Variables
-$Global:Tenants = @(
+# Function to Test Object
+Function Test-Object {
 
-    [PSCustomObject]@{
-        Slug     = "siwindbr"
-        Name     = "SIW Kits Eólicos"
-        Domain   = "siw.ind.br"
-        BaseUrl  = "https://siwindbr.sharepoint.com"
-        AdminUrl = "https://siwindbr-admin.sharepoint.com"
-        ClientID = "8b14c0ea-5f50-4c5c-b2f8-a50b5ca20d8b"
-    },
+    Param(
+        [Object]$Object = $Null,
+        [String]$Message,
+        [Switch]$Silent
+    )
 
-    [PSCustomObject]@{
-        Slug     = "gcgestao"
-        Name     = "GC Gestão"
-        Domain   = "gcgestao.com.br"
-        BaseUrl  = "https://gcgestao.sharepoint.com"
-        AdminUrl = "https://gcgestao-admin.sharepoint.com"
-        ClientID = "91aac6c3-b063-4175-8073-7e5b5a4ff281"
-    },
+    If ($Null -Ne $Object) { Return $True }
+    If ($Message -And -Not $Silent) { Write-Host $Message -ForegroundColor Red }
+    Return $False
 
-    [PSCustomObject]@{
-        Slug     = "inteceletrica"
-        Name     = "Intec Elétrica"
-        Domain   = "inteceletrica.com.br"
-        BaseUrl  = "https://inteceletrica.sharepoint.com"
-        AdminUrl = "https://inteceletrica-admin.sharepoint.com"
-        ClientID = "7735abc1-32a8-416b-a7be-3d2496ba4724"
+}
+
+# Function to Test Object Single
+Function Test-ObjectSingle {
+
+    Param(
+        [Object]$Object = $Null,
+        [String]$Message,
+        [Switch]$Silent
+    )
+
+    If ($Object.Count -Eq 1) { Return $True }
+    If ($Message -And -Not $Silent) { Write-Host $Message -ForegroundColor Red }
+    Return $False
+
+}
+
+# Function to Test Object Collection
+Function Test-ObjectCollection {
+
+    Param(
+        [Object]$Object = $Null,
+        [String]$Message,
+        [Switch]$Silent
+    )
+
+    If ($Object.Count -Gt 1) { Return $True }
+    If ($Message -And -Not $Silent) { Write-Host $Message -ForegroundColor Red }
+    Return $False
+
+}
+
+# Function to Invoke Operation
+Function Invoke-Operation {
+
+    Param(
+        [Parameter(Mandatory = $True)][String]$Message,
+        [Parameter(Mandatory = $True)][ScriptBlock]$Operation,
+        [Switch]$OutputInfos,
+        [Switch]$OutputErrors,
+        [Switch]$ReturnValue,
+        [Switch]$Silent
+    )
+
+    Try {
+
+        If (-Not $Silent) { Write-Host "$($Message)... " -ForegroundColor Cyan -NoNewline }
+        
+        $Output = & $Operation *>&1
+
+        If (-Not $Silent) { Write-Host "success!" -ForegroundColor Green }
+
+        If ($OutputInfos) { $Output | ForEach-Object { If ($_ -IsNot [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor White } } }
+
+        If ($OutputErrors) { $Output | ForEach-Object { If ($_ -Is [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor Red } } }
+
+        If ($ReturnValue) { Return $Output }
+
+    } Catch {
+
+        If (-Not $Silent) { Write-Host "failed!" -ForegroundColor Magenta }
+        
+        If ($OutputInfos) { $Output | ForEach-Object { If ($_ -IsNot [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor White } } }
+
+        If ($OutputErrors) { $Output | ForEach-Object { If ($_ -Is [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor Red } } }
+
+        If ($ReturnValue) { Return $Null }
+
     }
 
-)
+}
 
 # Function to Test Tenant
 Function Test-Tenant {
 
-    If ($Null -Eq $Global:CurrentTenant) { Write-Host "Not connected to a tenant." -ForegroundColor Red; Return $False } Else { Return $True }
+    Param(
+        [Switch]$Silent
+    )
+
+    Test-Object -Object $Global:CurrentTenant -Message "Not connected to a tenant." -Silent:$Silent
 
 }
 
@@ -44,26 +104,21 @@ Function Test-Tenant {
 Function Connect-Tenant {
 
     Param (
-        [Parameter(Mandatory = $True)]
-        [Object]$Tenant,
+        [Parameter(Mandatory = $True, ValueFromPipeline = $True)][Object]$Tenant,
         [Switch]$Silent
     )
 
-    Try {
+    Process {
 
-        If ($Null -Eq $Tenant.Slug) { Write-Host "Unknown tenant." -ForegroundColor Red; Return }
-        If (!($Silent)) { Write-Host "Connecting to tenant: $($Tenant.Name)..." -ForegroundColor Cyan -NoNewline }
-        
-        Connect-PnPOnline -Url $Tenant.AdminUrl -ClientId $Tenant.ClientID -OSLogin
-        Set-Variable -Name "CurrentTenant" -Value $Tenant -Scope Global
-        Set-Variable -Name "CurrentSite" -Value $Tenant.AdminUrl -Scope Global
-        If (!($Silent)) { Write-Host " success!" -ForegroundColor Green }
+        If (-Not (Test-ObjectSingle -Object $Tenant -Message "Multiple tenants detected, please provide only one tenant." -Silent:$Silent)) { Return }
 
-    } Catch {
+        Invoke-Operation -Message "Connecting to tenant: $($Tenant.Name)" -Silent:$Silent -Operation {
+            
+            Connect-PnPOnline -Url $Tenant.AdminUrl -ClientId $Tenant.ClientID -OSLogin
+            Set-Variable -Name "CurrentTenant" -Value $Tenant -Scope Global
+            Set-Variable -Name "CurrentSite" -Value $Tenant.AdminUrl -Scope Global
 
-        #Set-Variable -Name "CurrentTenant" -Value $Null -Scope Global
-        #Set-Variable -Name "CurrentSite" -Value $Null -Scope Global
-        If (!($Silent)) { Write-Host " failed!" -ForegroundColor Magenta }
+        }
 
     }
 
@@ -72,21 +127,73 @@ Function Connect-Tenant {
 # Function to Disconnect Tenant
 Function Disconnect-Tenant {
 
-    If (!(Test-Tenant)) { Return }
+    Param (
+        [Switch]$Silent
+    )
 
-    Disconnect-PnPOnline
-    Set-Variable -Name "CurrentTenant" -Value $Null -Scope Global
-    Set-Variable -Name "CurrentSite" -Value $Null -Scope Global
+    If (-Not (Test-Tenant -Silent:$Silent)) { Return }
+
+    Invoke-Operation -Message "Disconnecting from tenant: $($Global:CurrentTenant.Name)" -Silent:$Silent -Operation {
+
+        Disconnect-PnPOnline
+        Set-Variable -Name "CurrentTenant" -Value $Null -Scope Global
+        Set-Variable -Name "CurrentSite" -Value $Null -Scope Global
+
+    }
 
 }
 
 # Function to Get Tenant
 Function Get-Tenant {
 
-    If (!(Test-Tenant)) { Return }
+    Param(
+        [String]$Slug
+    )
 
-    $Tenant = Get-PnPTenant
+    #$Tenant = Get-PnPTenant
+    $Tenant = $Tenants | Where-Object Slug -EQ $Slug
     Return $Tenant
+
+}
+
+# Function To Get Tenants
+Function Get-Tenants {
+
+    $Tenants = @(
+
+        [PSCustomObject]@{
+            Slug     = "siwindbr"
+            Name     = "SIW Kits Eólicos"
+            Theme    = "SIW 2020"
+            Domain   = "siw.ind.br"
+            BaseUrl  = "https://siwindbr.sharepoint.com"
+            AdminUrl = "https://siwindbr-admin.sharepoint.com"
+            ClientID = "8b14c0ea-5f50-4c5c-b2f8-a50b5ca20d8b"
+        },
+
+        [PSCustomObject]@{
+            Slug     = "gcgestao"
+            Name     = "GC Gestão"
+            Theme    = "GC 2025"
+            Domain   = "gcgestao.com.br"
+            BaseUrl  = "https://gcgestao.sharepoint.com"
+            AdminUrl = "https://gcgestao-admin.sharepoint.com"
+            ClientID = "91aac6c3-b063-4175-8073-7e5b5a4ff281"
+        },
+
+        [PSCustomObject]@{
+            Slug     = "inteceletrica"
+            Name     = "Intec Elétrica"
+            Theme    = "Intec 2025"
+            Domain   = "inteceletrica.com.br"
+            BaseUrl  = "https://inteceletrica.sharepoint.com"
+            AdminUrl = "https://inteceletrica-admin.sharepoint.com"
+            ClientID = "7735abc1-32a8-416b-a7be-3d2496ba4724"
+        }
+
+    )
+
+    Return $Tenants
 
 }
 
@@ -100,13 +207,13 @@ Function Set-Tenant {
 
     Begin {
     
-        If (!(Test-Tenant)) { Return }
+        If (-Not (Test-Tenant)) { Return }
 
     }
 
     Process {
 
-        $Params = @{
+        $TenantParams = @{
             AllowCommentsTextOnEmailEnabled            = $True
             AllowFilesWithKeepLabelToBeDeletedODB      = $False
             AllowFilesWithKeepLabelToBeDeletedSPO      = $False
@@ -173,16 +280,9 @@ Function Set-Tenant {
             ViewersCanCommentOnMediaDisabled           = $False
         }
 
-        Try {
+        Invoke-Operation -Message "Setting tenant: $($Tenant.Name)" -Operation {
 
-            Write-Host "Configuring tenant: $($Global:CurrentTenant.Name)..." -ForegroundColor Cyan -NoNewline
-            
-            Set-PnPTenant @Params -Force
-            Write-Host " success!" -ForegroundColor Green
-
-        } Catch {
-
-            Write-Host " failed!" -ForegroundColor Magenta
+            Set-PnPTenant @TenantParams -Force
 
         }
 
@@ -193,7 +293,11 @@ Function Set-Tenant {
 # Function to Test Site
 Function Test-Site {
 
-    If ($Null -Eq $Global:CurrentSite) { Write-Host "Not connected to a site." -ForegroundColor Red; Return $False } Else { Return $True }
+    Param(
+        [Switch]$Silent
+    )
+
+    Test-Object -Object $Global:CurrentSite -Message "Not connected to a site." -Silent:$Silent
 
 }
 
@@ -201,25 +305,25 @@ Function Test-Site {
 Function Connect-Site {
 
     Param (
-        [Parameter(Mandatory = $True)]
-        [String]$SiteUrl,
+        [Parameter(Mandatory = $True, ValueFromPipeline = $True)][Object]$Site,
         [Switch]$ReturnConnection,
         [Switch]$Silent
     )
 
-    Try {
+    Process {
 
-        If (!(Test-Tenant)) { Return }
-        If (!($Silent)) { Write-Host "Connecting to site: $($SiteUrl)..." -ForegroundColor Cyan -NoNewline }
+        If (-Not (Test-Tenant -Silent:$Silent)) { Return }
+        If (-Not (Test-ObjectSingle -Object $Site -Message "Multiple sites detected, please provide only one site." -Silent:$Silent)) { Return }
 
-        Connect-PnPOnline -Url $SiteUrl -ClientId $Global:CurrentTenant.ClientID -OSLogin -ReturnConnection:$ReturnConnection
-        Set-Variable -Name "CurrentSite" -Value $SiteUrl -Scope Global
-        If (!($Silent)) { Write-Host " success!" -ForegroundColor Green }
+        $SiteUrl = If ($Site -Is [String]) { $Site } Else { $Site.Url }
+        $SiteTitle = If ($Site -Is [String]) { $Site } Else { $Site.Title }
 
-    } Catch {
+        Invoke-Operation "Connecting to site: $($SiteTitle)" -ReturnValue:$ReturnConnection -Silent:$Silent -Operation {
 
-        #Set-Variable -Name "CurrentSite" -Value $Null -Scope Global
-        If (!($Silent)) { Write-Host " failed!" -ForegroundColor Magenta }
+            Connect-PnPOnline -Url $SiteUrl -ClientId $Global:CurrentTenant.ClientID -OSLogin -ReturnConnection:$ReturnConnection
+            Set-Variable -Name "CurrentSite" -Value $Site -Scope Global
+
+        }
 
     }
 
@@ -228,8 +332,22 @@ Function Connect-Site {
 # Function to Disconnect Site
 Function Disconnect-Site {
 
-    If (!(Test-Site)) { Return }
-    If (!(Test-Tenant)) { Return }
+    Param (
+        [Switch]$Silent
+    )
+
+    If (-Not (Test-Site -Silent:$Silent)) { Return }
+    If (-Not (Test-Tenant -Silent:$Silent)) { Return }
+
+    $SiteTitle = If ($Global:CurrentSite -Is [String]) { $Global:CurrentSite } Else { $Global:CurrentSite.Title }
+
+    Invoke-Operation -Message "Disconnecting from site: $($SiteTitle)" -Silent:$Silent -Operation {
+
+        Disconnect-PnPOnline
+        Set-Variable -Name "CurrentTenant" -Value $Null -Scope Global
+        Set-Variable -Name "CurrentSite" -Value $Null -Scope Global
+
+    }
 
     Connect-PnPOnline -Url $Global:CurrentTenant.AdminUrl -ClientId $Global:CurrentTenant.ClientID -OSLogin
     Set-Variable -Name "CurrentSite" -Value $Global:CurrentTenant.AdminUrl -Scope Global
@@ -240,13 +358,11 @@ Function Disconnect-Site {
 Function Get-Site {
 
     Param(
-        [Parameter(Mandatory = $True)]
-        [String]$SiteUrl
+        [Parameter(Mandatory = $True)][String]$Url
     )
 
-    If (!(Test-Tenant)) { Return }
-
-    $Site = Get-PnPTenantSite -Identity $SiteUrl
+    If (-Not (Test-Tenant)) { Return }
+    $Site = Get-PnPTenantSite -Identity $Url
     Return $Site
 
 }
@@ -258,8 +374,7 @@ Function Get-Sites {
         [Switch]$Filter
     )
 
-    If (!(Test-Tenant)) { Return }
-
+    If (-Not (Test-Tenant)) { Return }
     $Sites = Get-PnPTenantSite
     If ($Filter) { $Sites = $Sites | Where-Object { ($_.Template -Match "SitePage" -Or $_.Template -Match "Group") -And $_.Url -NotMatch "/marca" } }
     Return $Sites
@@ -270,22 +385,26 @@ Function Get-Sites {
 Function Set-Site {
 
     Param(
-        [Parameter(Mandatory = $True, ValueFromPipeline = $True)]
-        [Object]$Site
+        [Parameter(Mandatory = $True, ValueFromPipeline = $True)][Object]$Site,
+        [Switch]$SetAll,
+        [Switch]$SetAdmins,
+        [Switch]$SetVersioning
     )
 
     Begin {
 
-        If (!(Test-Tenant)) { Return }
+        If (-Not (Test-Tenant)) { Return }
+        $GlobalAdmin = (Get-PnPUser | Where-Object Title -Match "Administradores Globais")[0]
+        $OtherAdmins = $Null
 
     }
 
     Process {
 
-        # Start Site
+        # Start Site Params
         If ($Site.Template -Match "SitePage" -And $Site.Url.EndsWith("sharepoint.com/")) {
 
-            $Params = @{
+            $SiteParams = @{
                 DefaultLinkPermission                       = "View"
                 DefaultLinkToExistingAccess                 = $True
                 DefaultShareLinkRole                        = "View"
@@ -302,10 +421,10 @@ Function Set-Site {
 
         }
         
-        # Others Sites
+        # Others Sites Params
         If ($Site.Template -Match "SitePage" -And -Not $Site.Url.EndsWith("sharepoint.com/")) {
 
-            $Params = @{
+            $SiteParams = @{
                 DefaultLinkPermission                       = "View"
                 DefaultLinkToExistingAccess                 = $True
                 DefaultShareLinkRole                        = "View"
@@ -322,10 +441,10 @@ Function Set-Site {
 
         }
         
-        # Group Sites
+        # Group Sites Params
         If ($Site.Template -Match "Group") {
 
-            $Params = @{
+            $SiteParams = @{
                 DefaultLinkPermission                       = "View"
                 DefaultLinkToExistingAccess                 = $True
                 DefaultShareLinkRole                        = "View"
@@ -342,18 +461,45 @@ Function Set-Site {
             
         }
 
-        Try {
+        # Connect to Site
+        $Connection = Invoke-Operation -Message "Connecting to site: $($Site.Title)" -ReturnValue -Operation {
 
-            Write-Host "Configuring site: $($Site.Url)..." -ForegroundColor Cyan -NoNewline
-            $Connection = Connect-Site -SiteUrl $Site.Url -Silent -ReturnConnection
-            Set-PnPTenantSite -Identity $Site.Url @Params -Connection $Connection
+            Connect-Site -Site $Site -Silent -ReturnConnection
+
+        }
+
+        # Set Site Admin
+        If ($SetAll -Or $SetAdmins) {
+
+            Invoke-Operation -Message "Setting site administrators" -Operation {
+
+                $SiteAdmins = Get-PnPSiteCollectionAdmin -Connection $Connection
+                Add-PnPSiteCollectionAdmin -Owners $OtherAdmins.LoginName -PrimarySiteCollectionAdmin $GlobalAdmin.LoginName -Connection $Connection
+                $SiteAdmins | Where-Object LoginName -NotIn ($GlobalAdmin.LoginName, $OtherAdmins.LoginName) | Remove-PnPSiteCollectionAdmin -Connection $Connection
+
+            }
+
+        }
+
+        # Set Versioning
+        If ($SetAll -Or $SetVersioning) {
+
+            Invoke-Operation -Message "Setting site versioning" -Operation {
+
+                Set-PnPSiteVersionPolicy -EnableAutoExpirationVersionTrim $True -ApplyToNewDocumentLibraries -ApplyToExistingDocumentLibraries -Connection $Connection
+                Set-PnPSiteVersionPolicy -InheritFromTenant -Connection $Connection
+
+            }
+
+        }
+
+        # Set Site Params
+        Invoke-Operation -Message "Setting site parameters" -Operation {
+
+            Set-PnPTenantSite -Identity $Site.Url @SiteParams -Connection $Connection
             Set-PnPWebHeader -HeaderLayout "Standard" -HeaderEmphasis "None" -HideTitleInHeader:$False -HeaderBackgroundImageUrl $Null -LogoAlignment Left -Connection $Connection
             Set-PnPFooter -Enabled:$False -Layout "Simple" -BackgroundTheme "Neutral" -Title $Null -LogoUrl $Null -Connection $Connection
-            Write-Host " success!" -ForegroundColor Green
-
-        } Catch {
-
-            Write-Host " failed!" -ForegroundColor Magenta
+            Disable-PnPSharingForNonOwnersOfSite -Identity $Site.Url -Connection $Connection
 
         }
 
@@ -361,26 +507,6 @@ Function Set-Site {
 
 }
 
-# Get-PnPSiteTemplate
-# Get-PnPContainer
-# Get-PnPContentType
-# Get-PnPFeature
-# Get-PnPGroup
-# Get-PnPGroupMember
-# Get-PnPGroupPermissions
-# Get-PnPHomeSite
-# Get-PnPHubSite
-# Get-PnPNavigationNode
-# Get-PnPPage
-# Get-PnPPageComponent
-# Get-PnPPlannerConfiguration
-# Get-PnPPowerPlatformEnvironment
-# Get-PnPPowerPlatformSolution
-# Get-PnPSearchConfiguration
-# Get-PnPSearchSettings
-# Get-PnPSharingForNonOwnersOfSite
-# Get-PnPSiteCollectionAdmin
-# Get-PnPSiteGroup
 # Get-PnPSitePolicy
 # Get-PnPSiteVersionPolicy
 # Get-PnPSiteVersionPolicyStatus
@@ -392,24 +518,33 @@ Function Set-Site {
 # Get-PnPUserProfilePhoto
 # Get-PnPUserProfileProperty
 
+# Get-PnPNavigationNode
 
-# Invoke Sites Configuration
-Function Invoke-Configuration {
+# Get-PnPPage
+# Get-PnPPageComponent
+# Get-PnPFeature
+# Get-PnPGroup
+# Get-PnPGroupMember
+# Get-PnPGroupPermissions
+# Get-PnPSiteGroup
+# Get-PnPFileSharingLink
+# Get-PnPFolderSharingLink
+# Get-PnPSearchConfiguration
+# Get-PnPSearchSettings
+# Configure Personal Sites
 
-    ForEach ($Tenant In $Tenants) {
+# Invoke Testing
+Function Invoke-Testing {
 
-        # Connect Tenant
-        Connect-Tenant -Tenant $Tenant
+    # Connect Tenant
+    $Tenants = Get-Tenants
+    $Tenant = $Tenants[0]
+    $Tenant | Connect-Tenant
 
-        # Configure Tenant
-        $Tenant = Get-Tenant
-        $Tenant | Set-Tenant
-
-        # Configure Sites
-        $Sites = Get-Sites -Filter
-        $Sites | Set-Site
-
-    }
+    # Connect Site
+    $Sites = Get-Sites -Filter
+    $Site = $Sites[0]
+    $Site | Connect-Site
 
 }
 
