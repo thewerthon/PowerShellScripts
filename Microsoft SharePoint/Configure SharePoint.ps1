@@ -1,8 +1,29 @@
-# Install: https://pnp.github.io/powershell/articles/installation.html
-# Register: https://pnp.github.io/powershell/articles/registerapplication.html
 # Uninstall-Module PnP.PowerShell -AllVersions
 # Install-Module PnP.PowerShell -Scope AllUsers -AllowPrerelease -SkipPublisherCheck
 # Update-Module PnP.PowerShell -Scope AllUsers -AllowPrerelease -Force
+
+# Clear Host
+Clear-Host
+
+# Function to Grant App Rights
+Function Grant-AppRights {
+
+    Param(
+        [Parameter(Mandatory = $True, ValueFromPipeline = $True)]
+        [Object]$Tenant
+    )
+
+    If (-Not (Get-Module MSOnline)) { Install-Module MSOnline -Force }
+
+    Connect-MSOLService
+    
+    $App = Get-MsolServicePrincipal -AppPrincipalId $Tenant.ClientID
+    $Role = Get-MsolRole -RoleName "Company Administrator"
+
+    Add-MsolRoleMember -RoleObjectId $Role.ObjectId -RoleMemberType "ServicePrincipal" -RoleMemberObjectId $App.ObjectId
+    Get-MsolRoleMember -RoleObjectId $Role.ObjectId
+
+}
 
 # Function to Test Object
 Function Test-Object {
@@ -49,14 +70,36 @@ Function Test-ObjectCollection {
 
 }
 
+# Function to Test Tenant
+Function Test-Tenant {
+
+    Param(
+        [Switch]$Silent
+    )
+
+    Test-Object -Object $Global:CurrentTenant -Message "Not connected to a tenant." -Silent:$Silent
+
+}
+
+# Function to Test Site
+Function Test-Site {
+
+    Param(
+        [Switch]$Silent
+    )
+
+    Test-Object -Object $Global:CurrentSite -Message "Not connected to a site." -Silent:$Silent
+
+}
+
 # Function to Invoke Operation
 Function Invoke-Operation {
 
     Param(
         [Parameter(Mandatory = $True)][String]$Message,
         [Parameter(Mandatory = $True)][ScriptBlock]$Operation,
-        [Switch]$OutputInfos,
-        [Switch]$OutputErrors,
+        [Switch]$ShowInfo,
+        [Switch]$ShowErrors,
         [Switch]$ReturnValue,
         [Switch]$Silent
     )
@@ -69,34 +112,25 @@ Function Invoke-Operation {
 
         If (-Not $Silent) { Write-Host "success!" -ForegroundColor Green }
 
-        If ($OutputInfos) { $Output | ForEach-Object { If ($_ -IsNot [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor White } } }
-
-        If ($OutputErrors) { $Output | ForEach-Object { If ($_ -Is [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor Red } } }
+        If ($ShowInfo) { Write-Host $Output -ForegroundColor Gray }
 
         If ($ReturnValue) { Return $Output }
+
+        $Output
 
     } Catch {
 
         If (-Not $Silent) { Write-Host "failed!" -ForegroundColor Magenta }
         
-        If ($OutputInfos) { $Output | ForEach-Object { If ($_ -IsNot [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor White } } }
+        If ($ShowInfo) { $Output }
 
-        If ($OutputErrors) { $Output | ForEach-Object { If ($_ -Is [System.Management.Automation.ErrorRecord]) { Write-Host $_ -ForegroundColor Red } } }
+        If ($ShowErrors) { Write-Host $_.Exception.Message -ForegroundColor Red }
 
         If ($ReturnValue) { Return $Null }
 
+        $Output
+
     }
-
-}
-
-# Function to Test Tenant
-Function Test-Tenant {
-
-    Param(
-        [Switch]$Silent
-    )
-
-    Test-Object -Object $Global:CurrentTenant -Message "Not connected to a tenant." -Silent:$Silent
 
 }
 
@@ -114,9 +148,37 @@ Function Connect-Tenant {
 
         Invoke-Operation -Message "Connecting to tenant: $($Tenant.Name)" -Silent:$Silent -Operation {
             
-            Connect-PnPOnline -Url $Tenant.AdminUrl -ClientId $Tenant.ClientID -OSLogin
+            Connect-PnPOnline -Url $Tenant.AdminUrl -ClientId $Tenant.ClientID -Interactive
             Set-Variable -Name "CurrentTenant" -Value $Tenant -Scope Global
             Set-Variable -Name "CurrentSite" -Value $Tenant.AdminUrl -Scope Global
+
+        }
+
+    }
+
+}
+
+# Function to Connect Site
+Function Connect-Site {
+
+    Param (
+        [Parameter(Mandatory = $True, ValueFromPipeline = $True)][Object]$Site,
+        [Switch]$ReturnConnection,
+        [Switch]$Silent
+    )
+
+    Process {
+
+        If (-Not (Test-Tenant -Silent:$Silent)) { Return }
+        If (-Not (Test-ObjectSingle -Object $Site -Message "Multiple sites detected, please provide only one site." -Silent:$Silent)) { Return }
+
+        $SiteUrl = If ($Site -Is [String]) { $Site } Else { $Site.Url }
+        $SiteTitle = If ($Site -Is [String]) { $Site } Else { $Site.Title }
+
+        Invoke-Operation "Connecting to site: $($SiteTitle)" -ReturnValue:$ReturnConnection -Silent:$Silent -Operation {
+
+            Connect-PnPOnline -Url $SiteUrl -ClientId $Global:CurrentTenant.ClientID -Interactive -ReturnConnection:$ReturnConnection
+            Set-Variable -Name "CurrentSite" -Value $Site -Scope Global
 
         }
 
@@ -143,6 +205,101 @@ Function Disconnect-Tenant {
 
 }
 
+# Function to Disconnect Site
+Function Disconnect-Site {
+
+    Param (
+        [Switch]$Silent
+    )
+
+    If (-Not (Test-Site -Silent:$Silent)) { Return }
+    If (-Not (Test-Tenant -Silent:$Silent)) { Return }
+
+    $SiteTitle = If ($Global:CurrentSite -Is [String]) { $Global:CurrentSite } Else { $Global:CurrentSite.Title }
+
+    Invoke-Operation -Message "Disconnecting from site: $($SiteTitle)" -Silent:$Silent -Operation {
+
+        Disconnect-PnPOnline
+        Set-Variable -Name "CurrentTenant" -Value $Null -Scope Global
+        Set-Variable -Name "CurrentSite" -Value $Null -Scope Global
+
+    }
+
+    Connect-PnPOnline -Url $Global:CurrentTenant.AdminUrl -ClientId $Global:CurrentTenant.ClientID -Interactive
+    Set-Variable -Name "CurrentSite" -Value $Global:CurrentTenant.AdminUrl -Scope Global
+
+}
+
+# Function To Get Tenants
+Function Get-Tenants {
+
+    $Tenants = @(
+
+        [PSCustomObject]@{
+            Slug     = "siwindbr"
+            Name     = "SIW Kits Eólicos"
+            Domain   = "siw.ind.br"
+            BaseUrl  = "https://siwindbr.sharepoint.com"
+            AdminUrl = "https://siwindbr-admin.sharepoint.com"
+            ClientID = "8b14c0ea-5f50-4c5c-b2f8-a50b5ca20d8b"
+            EventsID = "502190fd-356c-434c-a73f-db7146b5c1eb"
+            Theme    = '{"name":"SIW Kits Eólicos","isInverted":false,"palette":{"themeDarker":"#835719","themeDark":"#b27622","themeDarkAlt":"#d38c28","themePrimary":"#eb9d2d","themeSecondary":"#eda744","themeTertiary":"#f3c27d","themeLight":"#f9e0bc","themeLighter":"#fceedb","themeLighterAlt":"#fefbf6","black":"#000000","neutralDark":"#201f1e","neutralPrimary":"#323130","neutralPrimaryAlt":"#3b3a39","neutralSecondary":"#605e5c","neutralTertiary":"#a19f9d","neutralTertiaryAlt":"#c8c6c4","neutralLight":"#edebe9","neutralLighter":"#f3f2f1","neutralLighterAlt":"#faf9f8","white":"#ffffff","neutralQuaternaryAlt":"#e1dfdd","neutralQuaternary":"#d0d0d0","accent":"#ffc000"}}'
+        },
+
+        [PSCustomObject]@{
+            Slug     = "gcgestao"
+            Name     = "GC Gestão"
+            Domain   = "gcgestao.com.br"
+            BaseUrl  = "https://gcgestao.sharepoint.com"
+            AdminUrl = "https://gcgestao-admin.sharepoint.com"
+            ClientID = "91aac6c3-b063-4175-8073-7e5b5a4ff281"
+            EventsID = "2eb9023a-c795-4c5e-b536-2975c670ac40"
+            Theme    = '{"name":"GC Gestão","isInverted":false,"palette":{"themeDarker":"#002a61","themeDark":"#003984","themeDarkAlt":"#00449c","themePrimary":"#004aad","themeSecondary":"#165cb7","themeTertiary":"#5288ce","themeLight":"#a1bfe7","themeLighter":"#cbdcf2","themeLighterAlt":"#f2f6fc","black":"#000000","neutralDark":"#201f1e","neutralPrimary":"#323130","neutralPrimaryAlt":"#3b3a39","neutralSecondary":"#605e5c","neutralTertiary":"#a19f9d","neutralTertiaryAlt":"#c8c6c4","neutralLight":"#edebe9","neutralLighter":"#f3f2f1","neutralLighterAlt":"#faf9f8","white":"#ffffff","neutralQuaternaryAlt":"#e1dfdd","neutralQuaternary":"#d0d0d0","accent":"#159aff"}}'
+        },
+
+        [PSCustomObject]@{
+            Slug     = "inteceletrica"
+            Name     = "Intec Elétrica"
+            Domain   = "inteceletrica.com.br"
+            BaseUrl  = "https://inteceletrica.sharepoint.com"
+            AdminUrl = "https://inteceletrica-admin.sharepoint.com"
+            ClientID = "7735abc1-32a8-416b-a7be-3d2496ba4724"
+            EventsID = "c38fba0b-6ca6-4e1b-9b55-f284a18a6333"
+            Theme    = '{"name":"Intec Elétrica","isInverted":false,"palette":{"themeDarker":"#002849","themeDark":"#003663","themeDarkAlt":"#004075","themePrimary":"#004782","themeSecondary":"#115891","themeTertiary":"#4883b4","themeLight":"#98bcda","themeLighter":"#c5daeb","themeLighterAlt":"#f0f6fa","black":"#000000","neutralDark":"#201f1e","neutralPrimary":"#323130","neutralPrimaryAlt":"#3b3a39","neutralSecondary":"#605e5c","neutralTertiary":"#a19f9d","neutralTertiaryAlt":"#c8c6c4","neutralLight":"#edebe9","neutralLighter":"#f3f2f1","neutralLighterAlt":"#faf9f8","white":"#ffffff","neutralQuaternaryAlt":"#e1dfdd","neutralQuaternary":"#d0d0d0","accent":"#159aff"}}'
+        }
+
+    )
+
+    Return $Tenants
+
+}
+
+# Function to Get Sites
+Function Get-Sites {
+
+    Param(
+        [Switch]$SharePoint,
+        [Switch]$OneDrive,
+        [Switch]$Teams,
+        [Switch]$Channels
+    )
+
+    If (-Not (Test-Tenant)) { Return }
+
+    $Sites = @()
+    $AllSites = Get-PnPTenantSite -IncludeOneDriveSites
+
+    If ($SharePoint) { $Sites = $Sites + ($AllSites | Where-Object Template -Match "SitePage" | Where-Object Url -NotMatch "/marca") }
+    If ($OneDrive) { $Sites = $Sites + ($AllSites | Where-Object Template -Match "SpsPers" | Where-Object Url -Match "/personal/") }
+    If ($Teams) { $Sites = $Sites + ($AllSites | Where-Object Template -Match "Group") }
+    If ($Channels) { $Sites = $Sites + ($AllSites | Where-Object Template -Match "TeamChannel") }
+
+    If (-Not $SharePoint -And -Not $OneDrive -And -Not $Teams -And -Not $Channels) { $Sites = $AllSites }
+
+    Return $Sites
+
+}
+
 # Function to Get Tenant
 Function Get-Tenant {
 
@@ -156,44 +313,16 @@ Function Get-Tenant {
 
 }
 
-# Function To Get Tenants
-Function Get-Tenants {
+# Function to Get Site
+Function Get-Site {
 
-    $Tenants = @(
-
-        [PSCustomObject]@{
-            Slug     = "siwindbr"
-            Name     = "SIW Kits Eólicos"
-            Theme    = "SIW 2020"
-            Domain   = "siw.ind.br"
-            BaseUrl  = "https://siwindbr.sharepoint.com"
-            AdminUrl = "https://siwindbr-admin.sharepoint.com"
-            ClientID = "8b14c0ea-5f50-4c5c-b2f8-a50b5ca20d8b"
-        },
-
-        [PSCustomObject]@{
-            Slug     = "gcgestao"
-            Name     = "GC Gestão"
-            Theme    = "GC 2025"
-            Domain   = "gcgestao.com.br"
-            BaseUrl  = "https://gcgestao.sharepoint.com"
-            AdminUrl = "https://gcgestao-admin.sharepoint.com"
-            ClientID = "91aac6c3-b063-4175-8073-7e5b5a4ff281"
-        },
-
-        [PSCustomObject]@{
-            Slug     = "inteceletrica"
-            Name     = "Intec Elétrica"
-            Theme    = "Intec 2025"
-            Domain   = "inteceletrica.com.br"
-            BaseUrl  = "https://inteceletrica.sharepoint.com"
-            AdminUrl = "https://inteceletrica-admin.sharepoint.com"
-            ClientID = "7735abc1-32a8-416b-a7be-3d2496ba4724"
-        }
-
+    Param(
+        [Parameter(Mandatory = $True)][String]$Url
     )
 
-    Return $Tenants
+    If (-Not (Test-Tenant)) { Return }
+    $Site = Get-PnPTenantSite -Identity $Url
+    Return $Site
 
 }
 
@@ -202,7 +331,9 @@ Function Set-Tenant {
 
     Param(
         [Parameter(Mandatory = $True, ValueFromPipeline = $True)]
-        [Object]$Tenant
+        [Object]$Tenant,
+        [Switch]$ShowInfo,
+        [Switch]$ShowErrors
     )
 
     Begin {
@@ -216,13 +347,13 @@ Function Set-Tenant {
         $TenantParams = @{
             AllowCommentsTextOnEmailEnabled            = $True
             AllowFilesWithKeepLabelToBeDeletedODB      = $False
-            AllowFilesWithKeepLabelToBeDeletedSPO      = $False
+            AllowFilesWithKeepLabelToBeDeletedAppO     = $False
             AnyoneLinkTrackUsers                       = $True
             BlockUserInfoVisibilityInOneDrive          = "ApplyToNoUsers "
             BlockUserInfoVisibilityInSharePoint        = "ApplyToNoUsers"
             CommentsOnFilesDisabled                    = $False
             CommentsOnListItemsDisabled                = $False
-            ConditionalAccessPolicy                    = "AllowFullAccess"
+            ConditionalAccesAppolicy                   = "AllowFullAccess"
             CoreDefaultLinkToExistingAccess            = $True
             CoreDefaultShareLinkRole                   = "View"
             CoreDefaultShareLinkScope                  = "SpecificPeople"
@@ -232,9 +363,9 @@ Function Set-Tenant {
             DisableAddToOneDrive                       = $True
             DisableBackToClassic                       = $True
             DisablePersonalListCreation                = $False
-            DisplayNamesOfFileViewers                  = $True
-            DisplayNamesOfFileViewersInSpo             = $True
-            DisplayStartASiteOption                    = $False
+            DiApplayNamesOfFileViewers                 = $True
+            DiApplayNamesOfFileViewersInAppo           = $True
+            DiApplayStartASiteOption                   = $False
             EnableAIPIntegration                       = $True
             EnableAutoExpirationVersionTrim            = $True
             EnableAutoNewsDigest                       = $True
@@ -276,11 +407,11 @@ Function Set-Tenant {
             ShowEveryoneExceptExternalUsersClaim       = $False
             ShowOpenInDesktopOptionForSyncedFiles      = $True
             SocialBarOnSitePagesDisabled               = $False
-            SpecialCharactersStateInFileFolderNames    = "Allowed"
+            AppecialCharactersStateInFileFolderNames   = "Allowed"
             ViewersCanCommentOnMediaDisabled           = $False
         }
 
-        Invoke-Operation -Message "Setting tenant: $($Tenant.Name)" -Operation {
+        Invoke-Operation -Message "Setting tenant: $($Tenant.Name)" -ShowInfo:$ShowInfo -ShowErrors:$ShowErrors -Operation {
 
             Set-PnPTenant @TenantParams -Force
 
@@ -290,119 +421,91 @@ Function Set-Tenant {
 
 }
 
-# Function to Test Site
-Function Test-Site {
-
-    Param(
-        [Switch]$Silent
-    )
-
-    Test-Object -Object $Global:CurrentSite -Message "Not connected to a site." -Silent:$Silent
-
-}
-
-# Function to Connect Site
-Function Connect-Site {
-
-    Param (
-        [Parameter(Mandatory = $True, ValueFromPipeline = $True)][Object]$Site,
-        [Switch]$ReturnConnection,
-        [Switch]$Silent
-    )
-
-    Process {
-
-        If (-Not (Test-Tenant -Silent:$Silent)) { Return }
-        If (-Not (Test-ObjectSingle -Object $Site -Message "Multiple sites detected, please provide only one site." -Silent:$Silent)) { Return }
-
-        $SiteUrl = If ($Site -Is [String]) { $Site } Else { $Site.Url }
-        $SiteTitle = If ($Site -Is [String]) { $Site } Else { $Site.Title }
-
-        Invoke-Operation "Connecting to site: $($SiteTitle)" -ReturnValue:$ReturnConnection -Silent:$Silent -Operation {
-
-            Connect-PnPOnline -Url $SiteUrl -ClientId $Global:CurrentTenant.ClientID -OSLogin -ReturnConnection:$ReturnConnection
-            Set-Variable -Name "CurrentSite" -Value $Site -Scope Global
-
-        }
-
-    }
-
-}
-
-# Function to Disconnect Site
-Function Disconnect-Site {
-
-    Param (
-        [Switch]$Silent
-    )
-
-    If (-Not (Test-Site -Silent:$Silent)) { Return }
-    If (-Not (Test-Tenant -Silent:$Silent)) { Return }
-
-    $SiteTitle = If ($Global:CurrentSite -Is [String]) { $Global:CurrentSite } Else { $Global:CurrentSite.Title }
-
-    Invoke-Operation -Message "Disconnecting from site: $($SiteTitle)" -Silent:$Silent -Operation {
-
-        Disconnect-PnPOnline
-        Set-Variable -Name "CurrentTenant" -Value $Null -Scope Global
-        Set-Variable -Name "CurrentSite" -Value $Null -Scope Global
-
-    }
-
-    Connect-PnPOnline -Url $Global:CurrentTenant.AdminUrl -ClientId $Global:CurrentTenant.ClientID -OSLogin
-    Set-Variable -Name "CurrentSite" -Value $Global:CurrentTenant.AdminUrl -Scope Global
-
-}
-
-# Function to Get Site
-Function Get-Site {
-
-    Param(
-        [Parameter(Mandatory = $True)][String]$Url
-    )
-
-    If (-Not (Test-Tenant)) { Return }
-    $Site = Get-PnPTenantSite -Identity $Url
-    Return $Site
-
-}
-
-# Function to Get Sites
-Function Get-Sites {
-
-    Param(
-        [Switch]$Filter
-    )
-
-    If (-Not (Test-Tenant)) { Return }
-    $Sites = Get-PnPTenantSite
-    If ($Filter) { $Sites = $Sites | Where-Object { ($_.Template -Match "SitePage" -Or $_.Template -Match "Group") -And $_.Url -NotMatch "/marca" } }
-    Return $Sites
-
-}
-
 # Function to Set Site
 Function Set-Site {
 
     Param(
         [Parameter(Mandatory = $True, ValueFromPipeline = $True)][Object]$Site,
-        [Switch]$SetAll,
-        [Switch]$SetAdmins,
-        [Switch]$SetVersioning
+        [Switch]$All,
+        [Switch]$Admins,
+        [Switch]$Params,
+        [Switch]$Appearance,
+        [Switch]$Versioning,
+        [Switch]$Navigation,
+        [Switch]$ShowInfo,
+        [Switch]$ShowErrors
     )
 
     Begin {
 
         If (-Not (Test-Tenant)) { Return }
-        $GlobalAdmin = (Get-PnPUser | Where-Object Title -Match "Administradores Globais")[0]
-        $OtherAdmins = $Null
+        If ($All -Or $Admins) { $GlobalAdmin = "Administradores Globais"; $OtherAdmins = $Null }
+        If ($All -Or $Appearance) { $TenantTheme = ConvertFrom-Json $Global:CurrentTenant.Theme -AsHashtable }
+        If ($All -Or $Navigation) { $EventsList = $Global:CurrentTenant.EventsID }
 
     }
 
     Process {
 
-        # Start Site Params
-        If ($Site.Template -Match "SitePage" -And $Site.Url.EndsWith("sharepoint.com/")) {
+        # Check Home Site
+        $IsHome = $Site.Url.Replace("/", "").EndsWith(".sharepoint.com")
+
+        # Connect to Site
+        $Connection = Invoke-Operation -Message "Connecting to site: $($Site.Title)" -ShowInfo:$ShowInfo -ShowErrors:$ShowErrors -ReturnValue -Operation {
+
+            Connect-Site -Site $Site -Silent -ReturnConnection
+
+        }; $Operations = 0
+
+        # Set Site Admin
+        If ($All -Or $Admins) {
+
+            Invoke-Operation -Message "Setting site administrators" -ShowInfo:$ShowInfo -ShowErrors:$ShowErrors -Operation {
+
+                $SiteAdmins = Get-PnPSiteCollectionAdmin -Connection $Connection
+                Add-PnPSiteCollectionAdmin -Owners $OtherAdmins -PrimarySiteCollectionAdmin $GlobalAdmin -Connection $Connection
+                $SiteAdmins | Where-Object Title -NE $GlobalAdmin | Where-Object LoginName -NotIn ($OtherAdmins) | Remove-PnPSiteCollectionAdmin -Connection $Connection
+
+            }; $Operations++
+
+        }
+
+        # Set Versioning
+        If ($All -Or $Versioning) {
+
+            Invoke-Operation -Message "Setting site versioning" -ShowInfo:$ShowInfo -ShowErrors:$ShowErrors -Operation {
+
+                $Status = (Get-PnPSiteVersionPolicyStatus).Status
+
+                If ($Status -Ne "New") {
+
+                    Set-PnPSiteVersionPolicy -EnableAutoExpirationVersionTrim $True -ApplyToNewDocumentLibraries -ApplyToExistingDocumentLibraries -Connection $Connection
+                    Set-PnPSiteVersionPolicy -InheritFromTenant -Connection $Connection
+
+                }
+                
+            }; $Operations++
+
+        }
+
+        # Set Site Appearance
+        If ($All -Or $Appearance) {
+
+            Invoke-Operation -Message "Setting site appearance" -ShowInfo:$ShowInfo -ShowErrors:$ShowErrors -Operation {
+
+                Remove-PnPTenantTheme -Identity $TenantTheme.name -Connection $Connection
+                Add-PnPTenantTheme -Identity $TenantTheme.name -Palette $TenantTheme.palette -IsInverted $TenantTheme.isInverted -Overwrite -Connection $Connection
+                Set-PnPWebTheme -Theme $TenantTheme.name -Connection $Connection
+
+                Set-PnPWebHeader -HeaderLayout "Standard" -HeaderEmphasis "None" -HideTitleInHeader:$False -HeaderBackgroundImageUrl $Null -LogoAlignment Left -Connection $Connection
+                Set-PnPFooter -Enabled:$False -Layout "Simple" -BackgroundTheme "Neutral" -Title $Null -LogoUrl $Null -Connection $Connection
+                
+            }; $Operations++
+
+        }
+
+        # SharePoint Home Site Configuration
+        If ($Site.Template -Match "SitePage" -And $IsHome) {
 
             $SiteParams = @{
                 DefaultLinkPermission                       = "View"
@@ -419,10 +522,16 @@ Function Set-Site {
                 SharingCapability                           = "ExternalUserAndGuestSharing"
             }
 
+            If ($All -Or $Navigation) { 
+
+                #Add-PnPNavigationNode -Title "Wiki" -Location "QuickLaunch" -Url "wiki/" ## =========================================== ##
+            
+            }
+
         }
         
-        # Others Sites Params
-        If ($Site.Template -Match "SitePage" -And -Not $Site.Url.EndsWith("sharepoint.com/")) {
+        # SharePoint Other Sites Configuration
+        If ($Site.Template -Match "SitePage" -And -Not $IsHome) {
 
             $SiteParams = @{
                 DefaultLinkPermission                       = "View"
@@ -441,7 +550,27 @@ Function Set-Site {
 
         }
         
-        # Group Sites Params
+        # OneDrive Sites Configuration
+        If ($Site.Template -Match "SpsPers" -And $Site.Url -Match "/personal/") {
+
+            $SiteParams = @{
+                DefaultLinkPermission                       = "View"
+                DefaultLinkToExistingAccess                 = $False
+                DefaultShareLinkRole                        = "View"
+                DefaultShareLinkScope                       = "SpecificPeople"
+                DefaultSharingLinkType                      = "Direct"
+                DenyAddAndCustomizePages                    = $True
+                DisableSharingForNonOwners                  = $True
+                InheritVersionPolicyFromTenant              = $True
+                OverrideSharingCapability                   = $False
+                OverrideTenantAnonymousLinkExpirationPolicy = $False
+                OverrideTenantExternalUserExpirationPolicy  = $False
+                SharingCapability                           = "ExistingExternalUserSharingOnly"
+            }
+            
+        }
+
+        # Teams Sites Configuration
         If ($Site.Template -Match "Group") {
 
             $SiteParams = @{
@@ -461,63 +590,48 @@ Function Set-Site {
             
         }
 
-        # Connect to Site
-        $Connection = Invoke-Operation -Message "Connecting to site: $($Site.Title)" -ReturnValue -Operation {
+        # Channels Sites Configuration
+        If ($Site.Template -Match "TeamChannel") {
 
-            Connect-Site -Site $Site -Silent -ReturnConnection
-
-        }
-
-        # Set Site Admin
-        If ($SetAll -Or $SetAdmins) {
-
-            Invoke-Operation -Message "Setting site administrators" -Operation {
-
-                $SiteAdmins = Get-PnPSiteCollectionAdmin -Connection $Connection
-                Add-PnPSiteCollectionAdmin -Owners $OtherAdmins.LoginName -PrimarySiteCollectionAdmin $GlobalAdmin.LoginName -Connection $Connection
-                $SiteAdmins | Where-Object LoginName -NotIn ($GlobalAdmin.LoginName, $OtherAdmins.LoginName) | Remove-PnPSiteCollectionAdmin -Connection $Connection
-
+            $SiteParams = @{
+                DefaultLinkPermission                       = "View"
+                DefaultLinkToExistingAccess                 = $True
+                DefaultShareLinkRole                        = "View"
+                DefaultShareLinkScope                       = "SpecificPeople"
+                DefaultSharingLinkType                      = "Direct"
+                DenyAddAndCustomizePages                    = $True
+                DisableSharingForNonOwners                  = $True
+                InheritVersionPolicyFromTenant              = $True
+                OverrideSharingCapability                   = $False
+                OverrideTenantAnonymousLinkExpirationPolicy = $False
+                OverrideTenantExternalUserExpirationPolicy  = $False
+                SharingCapability                           = "ExistingExternalUserSharingOnly"
             }
-
-        }
-
-        # Set Versioning
-        If ($SetAll -Or $SetVersioning) {
-
-            Invoke-Operation -Message "Setting site versioning" -Operation {
-
-                Set-PnPSiteVersionPolicy -EnableAutoExpirationVersionTrim $True -ApplyToNewDocumentLibraries -ApplyToExistingDocumentLibraries -Connection $Connection
-                Set-PnPSiteVersionPolicy -InheritFromTenant -Connection $Connection
-
-            }
-
+            
         }
 
         # Set Site Params
-        Invoke-Operation -Message "Setting site parameters" -Operation {
+        If ($All -Or $Params -Or $Operations -Eq 0) {
 
-            Set-PnPTenantSite -Identity $Site.Url @SiteParams -Connection $Connection
-            Set-PnPWebHeader -HeaderLayout "Standard" -HeaderEmphasis "None" -HideTitleInHeader:$False -HeaderBackgroundImageUrl $Null -LogoAlignment Left -Connection $Connection
-            Set-PnPFooter -Enabled:$False -Layout "Simple" -BackgroundTheme "Neutral" -Title $Null -LogoUrl $Null -Connection $Connection
-            Disable-PnPSharingForNonOwnersOfSite -Identity $Site.Url -Connection $Connection
+            Invoke-Operation -Message "Setting site parameters" -ShowInfo:$ShowInfo -ShowErrors:$ShowErrors -Operation {
+
+                Set-PnPTenantSite -Identity $Site.Url @SiteParams -Connection $Connection
+                Disable-PnPSharingForNonOwnersOfSite -Identity $Site.Url -Connection $Connection
+
+            }; $Operations++
 
         }
+    
+        # Line Break
+        Write-Host ""
 
     }
 
 }
 
-# Get-PnPSitePolicy
-# Get-PnPSiteVersionPolicy
-# Get-PnPSiteVersionPolicyStatus
-# Get-PnPWeb
-# Get-PnPSubWeb
+# Get-PnPWeb => Site Configs
+# Get-PnPSubWeb => Subsite Configs
 # Get-PnPTenantCdnEnabled -CdnType Public
-# Get-PnPTenantId
-# Get-PnPUser
-# Get-PnPUserProfilePhoto
-# Get-PnPUserProfileProperty
-
 # Get-PnPNavigationNode
 
 # Get-PnPPage
@@ -542,12 +656,10 @@ Function Invoke-Testing {
     $Tenant | Connect-Tenant
 
     # Connect Site
-    $Sites = Get-Sites -Filter
-    $Site = $Sites[0]
-    $Site | Connect-Site
+    $Sites = Get-Sites -SharePoint
+    $Sites | Set-Site -All
 
 }
-
 
 # Function to Get Fields
 Function Get-Fields {
@@ -594,8 +706,8 @@ Function Set-Field {
     Process {
         
         # Fields Formats
-        $DateFormat = '{"$schema":"https://developer.microsoft.com/json-schemas/sp/v2/column-formatting.schema.json","elmType":"div","children":[{"elmType":"span","style":{"padding-right":"10px","padding-bottom":"2px","font-size":"16px"},"attributes":{"iconName":"Calendar"}},{"elmType":"span","txtContent":"@currentField.displayValue","style":{"padding-bottom":"4px"}}]}'
-        $PersonFormat = '{"$schema":"https://developer.microsoft.com/json-schemas/sp/v2/column-formatting.schema.json","elmType":"div","style":{"display":"flex","flex-wrap":"wrap","overflow":"hidden"},"children":[{"elmType":"div","forEach":"person in @currentField","defaultHoverField":"[$person]","attributes":{"class":"ms-bgColor-neutralLighter ms-fontColor-neutralSecondary"},"style":{"display":"flex","overflow":"hidden","align-items":"center","border-radius":"28px","margin":"4px 8px 4px 0px","min-width":"28px","height":"28px"},"children":[{"elmType":"img","attributes":{"src":"=''/_layouts/15/userphoto.aspx?size=S&accountname='' + [$person.email]","title":"[$person.title]"},"style":{"width":"28px","height":"28px","display":"block","border-radius":"50%"}},{"elmType":"div","style":{"overflow":"hidden","white-space":"nowrap","text-overflow":"ellipsis","padding":"0px 12px 2px 6px","display":"=if(length(@currentField) > 1, ''none'', ''flex'')","flex-direction":"column"},"children":[{"elmType":"span","txtContent":"[$person.title]","style":{"display":"inline","overflow":"hidden","white-space":"nowrap","text-overflow":"ellipsis","font-size":"12px","height":"15px"}},{"elmType":"span","txtContent":"[$person.department]","style":{"display":"inline","overflow":"hidden","white-space":"nowrap","text-overflow":"ellipsis","font-size":"9px"}}]}]}]}'
+        $DateFormat = '{"$schema":"https://developer.microsoft.com/json-schemas/App/v2/column-formatting.schema.json","elmType":"div","children":[{"elmType":"Appan","style":{"padding-right":"10px","padding-bottom":"2px","font-size":"16px"},"attributes":{"iconName":"Calendar"}},{"elmType":"Appan","txtContent":"@currentField.diApplayValue","style":{"padding-bottom":"4px"}}]}'
+        $PersonFormat = '{"$schema":"https://developer.microsoft.com/json-schemas/App/v2/column-formatting.schema.json","elmType":"div","style":{"diApplay":"flex","flex-wrap":"wrap","overflow":"hidden"},"children":[{"elmType":"div","forEach":"person in @currentField","defaultHoverField":"[$person]","attributes":{"class":"ms-bgColor-neutralLighter ms-fontColor-neutralSecondary"},"style":{"diApplay":"flex","overflow":"hidden","align-items":"center","border-radius":"28px","margin":"4px 8px 4px 0px","min-width":"28px","height":"28px"},"children":[{"elmType":"img","attributes":{"src":"=''/_layouts/15/userphoto.aAppx?size=S&accountname='' + [$person.email]","title":"[$person.title]"},"style":{"width":"28px","height":"28px","diApplay":"block","border-radius":"50%"}},{"elmType":"div","style":{"overflow":"hidden","white-Appace":"nowrap","text-overflow":"ellipsis","padding":"0px 12px 2px 6px","diApplay":"=if(length(@currentField) > 1, ''none'', ''flex'')","flex-direction":"column"},"children":[{"elmType":"Appan","txtContent":"[$person.title]","style":{"diApplay":"inline","overflow":"hidden","white-Appace":"nowrap","text-overflow":"ellipsis","font-size":"12px","height":"15px"}},{"elmType":"Appan","txtContent":"[$person.department]","style":{"diApplay":"inline","overflow":"hidden","white-Appace":"nowrap","text-overflow":"ellipsis","font-size":"9px"}}]}]}]}'
 
         Switch ($Field.InternalName) {
             
@@ -673,7 +785,7 @@ ForEach ($Item In $Lists) {
 
         If ($List.BaseType -Eq "DocumentLibrary") {
             
-            $ViewFields = @("DocIcon", "LinkFilename", "Author", "Created", "Editor", "Modified", "FileSizeDisplay")
+            $ViewFields = @("DocIcon", "LinkFilename", "Author", "Created", "Editor", "Modified", "FileSizeDiApplay")
             $ColumnWidth = '<FieldRef Name="Nome" width="500" /><FieldRef Name="Modificado Por" width="200" /><FieldRef Name="Modificado Em" width="200" /><FieldRef Name="Criado Por" width="200" /><FieldRef Name="Criado Em" width="200" /><FieldRef Name="Tamanho do Arquivo" width="200" />'
         
         } Else {
