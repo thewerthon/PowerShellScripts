@@ -7,7 +7,7 @@ Connect-MgGraph -Scopes "Directory.ReadWrite.All", "Group.Read.All"
 $SecurityGroupName = "Administradores Globais"
 $SettingsObjectID = (Get-MgBetaDirectorySetting | Where-Object -Property Displayname -Value "Group.Unified" -EQ).id
 
-If (!$SettingsObjectID) {
+if (!$SettingsObjectID) {
 
 	$Params = @{
 		templateId = "62375ab9-6b52-47ed-826b-58e47e0e304b"
@@ -18,12 +18,12 @@ If (!$SettingsObjectID) {
 			}
 		)
 	}
-	
+
 	New-MgBetaDirectorySetting -BodyParameter $Params
 	$SettingsObjectID = (Get-MgBetaDirectorySetting | Where-Object -Property Displayname -Value "Group.Unified" -EQ).Id
 
 }
- 
+
 $GroupId = (Get-MgBetaGroup | Where-Object { $_.displayname -eq $SecurityGroupName }).Id
 
 $Params = @{

@@ -2,87 +2,87 @@
 $WinRar = "C:\Program Files\WinRAR\Rar.exe"
 
 # Test WinRar Path
-Function Test-WinRarPath {
+function Test-WinRarPath {
 
-    If (-Not (Test-Path $WinRar)) { 
-        
-        Throw "WinRAR executable not found at '$WinRar'"
-    
-    }
+	if (-not (Test-Path $WinRar)) {
+
+		throw "WinRAR executable not found at '$WinRar'"
+
+	}
 
 }
 
 # Test WinRar Origin
-Function Test-WinRarOrigin {
+function Test-WinRarOrigin {
 
-    Param(
-        [Parameter(Mandatory = $True)][String]$Origin
-    )
+	param(
+		[Parameter(Mandatory = $True)][String]$Origin
+	)
 
-    If (-Not (Test-Path $Origin)) {
-        
-        Throw "Origin '$Origin' does not exist."
-    
-    }
+	if (-not (Test-Path $Origin)) {
+
+		throw "Origin '$Origin' does not exist."
+
+	}
 
 }
 
 # Compress WinRar Archive
-Function Compress-WinRarArchive {
+function Compress-WinRarArchive {
 
-    [Alias("rar", "compress")]
+	[Alias("rar", "compress")]
 
-    Param(
-        [Parameter(Mandatory = $True, ValueFromPipeline = $True)][Alias("o")][String]$Origin,
-        [Parameter(Mandatory = $False, ValueFromPipeline = $False)][Alias("d")][String]$Destination,
-        [Alias("r")][Switch]$RemoveAfter
-    )
+	param(
+		[Parameter(Mandatory = $True, ValueFromPipeline = $True)][Alias("o")][String]$Origin,
+		[Parameter(Mandatory = $False, ValueFromPipeline = $False)][Alias("d")][String]$Destination,
+		[Alias("r")][Switch]$RemoveAfter
+	)
 
-    Begin {
+	begin {
 
-        Test-WinRarPath
-        $Flags = If ($RemoveAfter) { "-df" }
+		Test-WinRarPath
+		$Flags = if ($RemoveAfter) { "-df" }
 
-    }
-    
-    Process {
+	}
 
-        Test-WinRarOrigin $Origin
-        $Item = Get-Item $Origin
+	process {
 
-        If ($Destination) {
+		Test-WinRarOrigin $Origin
+		$Item = Get-Item $Origin
 
-            $Dest = $Destination
-            
-        } Else {
+		if ($Destination) {
 
-            $Name = $Item.BaseName
-            $Path = If ($Item.PSIsContainer) { $Item.Parent.FullName } Else { $Item.DirectoryName }
-            $Dest = Join-Path $Path "$Name.rar"
+			$Dest = $Destination
 
-        }
+		} else {
 
-        If ($Item.PSIsContainer) {
+			$Name = $Item.BaseName
+			$Path = if ($Item.PSIsContainer) { $Item.Parent.FullName } else { $Item.DirectoryName }
+			$Dest = Join-Path $Path "$Name.rar"
 
-            Push-Location $Item.FullName
-            & "$WinRar" a -ep1 -r -m5 $Flags "$Dest" *
-            Pop-Location
+		}
 
-            If ($RemoveAfter) {
-                
-                Start-Sleep -Milliseconds 250
-                Remove-Item $Item.FullName -Recurse -Force
-            
-            }
+		if ($Item.PSIsContainer) {
 
-        } Else {
+			Push-Location $Item.FullName
+			& "$WinRar" a -ep1 -r -m5 $Flags "$Dest" *
+			Pop-Location
 
-            & "$WinRar" a -ep1 -m5 $Flags "$Dest" "$($Item.FullName)"
+			if ($RemoveAfter) {
 
-        }
+				Start-Sleep -Milliseconds 250
+				Remove-Item $Item.FullName -Recurse -Force
 
-        Write-Host
-    
-    }
+			}
+
+		} else {
+
+			& "$WinRar" a -ep1 -m5 $Flags "$Dest" "$($Item.FullName)"
+
+		}
+
+		Write-Host
+
+	}
 
 }
