@@ -1,7 +1,10 @@
 $DistroName = "Debian"
+$WindowsUser = "Ewerton"
 $LinuxUser = Read-Host "Enter username"
 $LinuxPass = Read-Host "Enter password" -MaskInput
 $RepoUrl = "https://github.com/olympus-app/Olympus"
+$CertFile = "C:\Users\$WindowsUser\.aspnet\wsl.pfx"
+$SSHID = "id_ed25519"
 
 wsl --unregister $DistroName
 wsl --install -d $DistroName --web-download --no-launch
@@ -9,6 +12,14 @@ wsl --install -d $DistroName --web-download --no-launch
 if ($LASTEXITCODE -ne 0) { exit }
 
 Start-Sleep -Seconds 3
+
+if (-not (Test-Path $CertFile)) {
+
+	New-Item -ItemType Directory -Force -Path "C:\Users\$WindowsUser\.aspnet" | Out-Null
+	dotnet dev-certs https -ep $CertFile -p $LinuxPass
+	dotnet dev-certs https --trust
+
+}
 
 $BashScript = @"
 #!/bin/bash
@@ -22,7 +33,7 @@ echo "$LinuxUser ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$LinuxUser
 # Setup WSL
 echo "[boot]" > /etc/wsl.conf
 echo "systemd=true" >> /etc/wsl.conf
-echo "[user]" > /etc/wsl.conf
+echo "[user]" >> /etc/wsl.conf
 echo "default=$LinuxUser" >> /etc/wsl.conf
 
 # Setup file watcher
@@ -75,25 +86,47 @@ EOF
 
 runuser -l $LinuxUser -c '
 
+    # Setup bash
     echo "alias cls=\"clear\"" >> ~/.bashrc
     echo "export DOTNET_NOLOGO=true" >> ~/.bashrc
     echo "export DOTNET_CLI_TELEMETRY_OPTOUT=1" >> ~/.bashrc
     echo "export PS1=\"\[\033[01;34m\]\w\[\033[00m\]\\`$ \"" >> ~/.bashrc
-    source ~/.bashrc
 
+	# Define vars
+	export DOTNET_NOLOGO=true
+    export DOTNET_CLI_TELEMETRY_OPTOUT=1
+
+    # Setup git
+    mkdir -p ~/.ssh
+    cp /mnt/c/Users/$WindowsUser/.ssh/$SSHID* ~/.ssh/
+    chmod 700 ~/.ssh
+    chmod 600 ~/.ssh/$SSHID
+    chmod 644 ~/.ssh/$SSHID.pub
+    git config --global user.name "Éwerton Ferreira"
+    git config --global user.email "eeeeewerton@gmail.com"
+    git config --global gpg.format ssh
+    git config --global user.signingkey ~/.ssh/$SSHID.pub
+    git config --global commit.gpgsign true
+    git config --global credential.helper "/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe"
     git clone $RepoUrl Olympus && cd Olympus
     git checkout dev
 
+    # Setup AspNet
+	dotnet dev-certs https --import /mnt/c/Users/$WindowsUser/.aspnet/wsl.pfx -p $LinuxPass
+
+    # Setup NuGet
     mkdir -p ~/.nuget/local
     dotnet nuget add source ~/.nuget/local -n local
     dotnet pack Packages/Olympus.Analyzers -c Release -o ~/.nuget/local
     dotnet pack Packages/Olympus.Generators -c Release -o ~/.nuget/local
     dotnet pack Packages/Olympus.Sdk -c Release -o ~/.nuget/local
 
+    # Restore solution
     dotnet workload restore Olympus.slnx
     dotnet tool restore
     dotnet restore
 
+    # Finish
     find . -type d \( -name bin -o -name obj \) -prune -exec rm -rf {} +
     echo "cd ~/Olympus" >> ~/.bashrc
 '
